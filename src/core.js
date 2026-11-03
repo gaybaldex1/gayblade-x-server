@@ -182,8 +182,8 @@ export function createCore(hooks) {
   // 演出で試合を止める長さ(秒): 1対1のカットイン / トーナメントの3D召喚(通常・2回目以降の短縮版)
   const CUTIN_T = 2.2;
   const SUMMON_LEN = { full: 3.2, short: 1.4 };
-  // 戦闘BGMの曲数(mn5・bgm2・bgm3・bgm4)。試合ごとにホスト(サーバー)が1曲選んで、全員の端末で同じ曲を流す
-  const BGM_COUNT = 4;
+  // 戦闘BGMの曲数(今は mn5 のみ)。試合ごとにホスト(サーバー)が1曲選んで、全員の端末で同じ曲を流す
+  const BGM_COUNT = 1;
   const CHEER_GAP = 300; // 応援: 同じ人が続けて送れる間隔(ミリ秒)
   
   // ---------- 全体の状態 ----------
