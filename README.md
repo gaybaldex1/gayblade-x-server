@@ -50,7 +50,7 @@ npm run dev            # http://127.0.0.1:8787
 
 ## 通信(参考)
 
-- 参加者 → サーバー: `hello`(create: 部屋を作る) / `set` / `img` / `shoot` / `aim` / `a`(覚醒) / `s`(賢者モード) / `rub` / `cheer`(トーナメントの応援) / `rdy`(試合の画面の準備ができた)
-- 部屋を仕切る人だけ: `cfg`(モード・スタジアム) / `cpu` / `kick` / `team` / `start` / `tgo`(トーナメントの次の試合) / `tskip` / `again` / `lobby` / `skip` / `cs`(召喚の短縮)
-- サーバー → 参加者: `welcome`(id) / `reject` / `lobby`(lead: 仕切る人) / `lead` / `img` / `start`(bgm: 戦闘BGMの番号) / `st`(試合の状態) / `me`(自分のコマの状態) / `end` / `bk`(トーナメント表) / `msg`
+- 参加者 → サーバー: `hello`(create: 部屋を作る) / `set` / `img` / `shoot` / `aim` / `a`(覚醒) / `s`(賢者モード) / `rub` / `cheer`(トーナメントの応援) / `rdy`(試合の画面の準備ができた) / `gd`(試合前の操作の案内: 見たい・読み終わった)
+- 部屋を仕切る人だけ: `cfg`(モード・スタジアム) / `cpu` / `kick` / `team` / `start` / `tgo`(トーナメントの次の試合) / `tskip` / `again` / `lobby` / `skip` / `cs`(召喚の短縮) / `rskip`(トーナメントのリプレイを飛ばす)
+- サーバー → 参加者: `welcome`(id) / `reject` / `lobby`(lead: 仕切る人) / `lead` / `img` / `start`(bgm: 戦闘BGMの番号 / gw: 操作の案内を読む人) / `st`(試合の状態) / `me`(自分のコマの状態) / `end` / `bk`(トーナメント表) / `msg`
 - `ping` には、部屋を起こさずに `pong` を自動で返します。

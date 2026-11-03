@@ -21,12 +21,12 @@ if (on) throw new Error('#core が閉じていません');
 
 // サーバーが差し替える関数(画面の処理)
 export const HOOKS = ['onEvent', 'uiLobby', 'uiClearField', 'uiMsg', 'uiMatchStart', 'uiEnterGame', 'uiBracket', 'uiBracketHide', 'uiEnd', 'uiSkipFx',
-  'uiIntroEnd', 'uiGo', 'uiHoldFreeze', 'uiUnfreeze', 'uiReplayStart', 'uiReplayEnd', 'uiToLobby'];
+  'uiIntroEnd', 'uiGo', 'uiHoldFreeze', 'uiUnfreeze', 'uiReplayStart', 'uiReplayEnd', 'uiToLobby', 'uiGuideEnd'];
 // サーバーから使う名前
 const API = ['S', 'LOOP', 'DT', 'TIME_LIMIT', 'MAX_PLAYERS', 'TOUR_MIN', 'PART_MELT', 'TYPES', 'BLADES', 'STADIUMS', 'MODE_INFO', 'TEAM_NAMES',
   'clamp', 'isImgData', 'makePlayer', 'addCpu', 'kick', 'reject', 'onHostData', 'onLeave', 'broadcast', 'broadcastLobby',
   'hostStart', 'hostAgain', 'toLobby', 'tourPlayNext', 'tourSkipCpu', 'tourP', 'tourNext', 'skipToResult', 'cpuOnlyBattle', 'nextIsCpuMatch',
-  'hostTick', 'step', 'checkWin', 'initTops', 'launchMatch', 'makeSnap', 'sendPads', 'fastSimulate'];
+  'hostTick', 'step', 'checkWin', 'initTops', 'launchMatch', 'makeSnap', 'sendPads', 'fastSimulate', 'skipReplay'];
 
 const out = `// 自動生成ファイル(直接編集しない): index.html の「#core」部分をそのまま集めたもの
 // 作り直し: node tools/build-core.mjs <index.html のパス>

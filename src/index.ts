@@ -50,7 +50,7 @@ export class GameRoom extends DurableObject<Env> {
 		const noop = () => {};
 		return {
 			onEvent: noop, uiClearField: noop, uiMatchStart: noop, uiBracketHide: noop, uiSkipFx: noop,
-			uiIntroEnd: noop, uiGo: noop, uiUnfreeze: noop, uiReplayStart: noop, uiReplayEnd: noop,
+			uiIntroEnd: noop, uiGo: noop, uiUnfreeze: noop, uiReplayStart: noop, uiReplayEnd: noop, uiGuideEnd: noop,
 			uiHoldFreeze: () => false,
 			uiLobby: () => { this.dirty = true; },
 			// 部屋を仕切る人へのお知らせ(「2人以上必要です」など)
@@ -141,7 +141,7 @@ export class GameRoom extends DurableObject<Env> {
 		}
 		if (!S.conns.has(id)) return; // hello の前のメッセージは受け付けない
 		if (d.t === 'rdy') { if (this.readyWait) this.readyWait.delete(id); return; } // 試合の画面の準備ができた
-		if (['set', 'img', 's', 'a', 'shoot', 'rub', 'aim', 'cheer'].includes(d.t)) {
+		if (['set', 'img', 's', 'a', 'shoot', 'rub', 'aim', 'cheer', 'gd'].includes(d.t)) { // gd: 試合前の操作の案内(見たい・読み終わった)
 			C.onHostData(conn, d);
 			if (d.t === 'img') this.dirty = true;
 			return;
@@ -177,6 +177,7 @@ export class GameRoom extends DurableObject<Env> {
 				if ((S.phase === 'countdown' || S.phase === 'battle') && C.cpuOnlyBattle()) C.skipToResult();
 				break;
 			case 'cs': S.cutShort = !!d.on; this.dirty = true; break;     // 3D召喚の短縮(2回目以降)
+			case 'rskip': C.skipReplay(); break;                          // トーナメントの決め手のリプレイを飛ばす
 		}
 	}
 

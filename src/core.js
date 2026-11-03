@@ -3,7 +3,7 @@
 // 部屋ごとに createCore() を呼んで、部屋ごとに別々の状態(S)を持つ
 /* eslint-disable */
 export function createCore(hooks) {
-  const { onEvent, uiLobby, uiClearField, uiMsg, uiMatchStart, uiEnterGame, uiBracket, uiBracketHide, uiEnd, uiSkipFx, uiIntroEnd, uiGo, uiHoldFreeze, uiUnfreeze, uiReplayStart, uiReplayEnd, uiToLobby } = hooks;
+  const { onEvent, uiLobby, uiClearField, uiMsg, uiMatchStart, uiEnterGame, uiBracket, uiBracketHide, uiEnd, uiSkipFx, uiIntroEnd, uiGo, uiHoldFreeze, uiUnfreeze, uiReplayStart, uiReplayEnd, uiToLobby, uiGuideEnd } = hooks;
   // ---------- 設定値 ----------
   const R = 300;              // スタジアム半径
   const TOP_R = 28;           // ベイの半径(当たり判定)
@@ -32,6 +32,7 @@ export function createCore(hooks) {
   const ORBIT_DRAIN = 1.5;    // アタック: 覚醒中のスタミナの減り倍率(1.8 → 1.5 に緩和)
   const BOUNCE_P = 0.45;      // ディフェンス: 上下運動の周期(秒)
   const AIR_T = 0.45;         // ディフェンス: 打ち上げられた相手の滞空時間(秒)
+  const AIR_H = 90;           // ディフェンス: 打ち上げられた相手の高さ(見た目)
   // バランス崩れ(0〜1)。1になると転倒して脱落。回転が速いほど早く立ち直り、遅いと立ち直れず悪化する
   const WOB_SLAM = 0.55;      // ディフェンスの叩きつけで崩れる量
   const WOB_OIL = 0.72;       // 相手のオイルの上にいる間、1秒あたりに崩れる量(最初の72% = 80%からさらに10%下げた)
@@ -184,7 +185,8 @@ export function createCore(hooks) {
   const SUMMON_LEN = { full: 3.2, short: 1.4 };
   // 戦闘BGMの曲数(今は mn5 のみ)。試合ごとにホスト(サーバー)が1曲選んで、全員の端末で同じ曲を流す
   const BGM_COUNT = 1;
-  const CHEER_GAP = 300; // 応援: 同じ人が続けて送れる間隔(ミリ秒)
+  const GUIDE_MAX = 40;   // 試合前の操作の案内: 読んでいる人を待つのは最大この秒数まで
+  const CHEER_GAP = 1800; // 応援: 同じ人が続けて送れる間隔(ミリ秒)。端末側は2秒ごと。通信の揺れで少し早く届いても捨てないよう、受け付けは少しゆるく
   
   // ---------- 全体の状態 ----------
   const S = {
@@ -212,8 +214,8 @@ export function createCore(hooks) {
   const isHost = () => S.role === 'host' || S.role === 'solo';
   const battleTime = () => isHost() ? S.elapsed : TIME_LIMIT - S.tl; // バトル開始からの経過秒
   // 試合を進める時計(ホスト・サーバー): acc = 物理の固定ステップのたまり / pad = コントローラーの状態を送る間隔 / snap = 画面の状態を送る間隔
-  const LOOP = { acc: 0, pad: 0, snap: 0 };
-  // ---- index.html 952〜1160行目 ----
+  const LOOP = { acc: 0, pad: 0, snap: 0, fzSent: false }; // fzSent: 試合が止まってから、止まった状態をもう送ったか
+  // ---- index.html 964〜1174行目 ----
   function randType() { const k = Object.keys(TYPES); return k[Math.floor(Math.random() * k.length)]; }
   const isImgData = d => typeof d === 'string' && d.startsWith('data:image/') && d.length < 300000;
   
@@ -239,7 +241,7 @@ export function createCore(hooks) {
     broadcast({ t: 'img', id: p.id, data: null });
     broadcastLobby();
   }
-  // ---- index.html 1216〜1240行目 ----
+  // ---- index.html 1230〜1254行目 ----
   function onHostData(conn, d) {
     const id = conn.peer;
     const inp = () => S.inputs[id] || (S.inputs[id] = { ax: 0, ay: 0, dashReq: false, awakeReq: false });
@@ -272,12 +274,12 @@ export function createCore(hooks) {
       }
       case 's': { // 賢者モード: 使えるならその場で発動し、すぐ本人へ返事をする
         const t = S.tops.find(t => t.id === id);
-        if (t && canSage(t)) { startSage(t); sendPads(id); }
+        if (t && canSage(t)) { startSage(t); sendPads(id); S.padIds.delete(id); } // 本人へはもう送ったので、次の送信からは外す
         break;
       }
       case 'a': { // 覚醒: 発動できる状態ならフレームを待たずにその場で発動し、すぐ本人へ返事をする
         const t = S.tops.find(t => t.id === id);
-        if (t && t.alive && canAwaken(t)) { startAwaken(t); sendPads(id); } else inp().awakeReq = true;
+        if (t && t.alive && canAwaken(t)) { startAwaken(t); sendPads(id); S.padIds.delete(id); } else inp().awakeReq = true; // 本人へはもう送ったので、次の送信からは外す
         break;
       }
       case 'shoot': { // シュート: GOとのズレは参加者の端末で測ったものを使う(通信の遅れで不利にならないように)
@@ -296,6 +298,7 @@ export function createCore(hooks) {
         break;
       }
       case 'cheer': hostCheer(id); break; // トーナメントの応援(観戦している人)
+      case 'gd': setGuide(id, !!d.on); break; // 試合前の操作の案内: 見たいか(ロビー) / 読み終わった(試合の始まり)
     }
   }
   function reject(conn, reason) { conn.send({ t: 'reject', r: reason }); setTimeout(() => conn.close(), 300); }
@@ -318,7 +321,7 @@ export function createCore(hooks) {
   function broadcast(msg) { for (const c of S.conns.values()) if (c.open) c.send(msg); }
   // lead: 部屋を仕切る人(専用サーバーのとき) / tour: トーナメント中か
   function broadcastLobby() { broadcast({ t: 'lobby', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, stats: S.stats, hist: S.hist, lead: S.lead || null, tour: S.tour ? 1 : 0 }); uiLobby(); }
-  // ---- index.html 1279〜1356行目 ----
+  // ---- index.html 1293〜1371行目 ----
   function hostStart() {
     if (S.mode === 'tourney') return S.tour ? tourPlayNext() : tourStart();
     const alivePlayers = S.players.filter(p => !p.left);
@@ -355,7 +358,7 @@ export function createCore(hooks) {
     if (a <= SHOT_JUST) spin += 8; else spin -= Math.min(40, (a - SHOT_JUST) * 45);
     t.spin = clamp(spin, 35, 108);
     t.shotGrade = shotGrade(off); t.aimSel = aim;
-    t.launchAt = Math.max(0, S.elapsed); S.padDirty = true;
+    t.launchAt = Math.max(0, S.elapsed); padMark(t.id);
     emit(['sh', t.idx, SHOT_GRADES.indexOf(t.shotGrade), Math.round(pw * 100), Math.round(aim * 100), Math.round(t.spin)]);
   }
   // ---------- エクストリームスタジアムのスロー演出(1vs1トーナメントだけ) = 確定演出 ----------
@@ -506,9 +509,19 @@ export function createCore(hooks) {
     initTops();
     S.elapsed = 0; S.tl = TIME_LIMIT; S.pendingEv = []; S.pendingEnd = null; S.lastKO = null; S.freezeT = 0;
     S.bgm = Math.floor(Math.random() * BGM_COUNT); // この試合の戦闘BGM(0 = mn5)
-    broadcast({ t: 'start', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, bgm: S.bgm, lp: S.tops.map(t => [Math.round(t.a0 * 1000) / 1000, Math.round(t.sx), Math.round(t.sy)]) });
+    // 試合前の操作の案内: 見たいと言っている人(この試合に出る人だけ)が読み終わるまで、開始演出を待つ
+    S.guideWait = new Set(S.players.filter(p => !p.cpu && S.guideIds && S.guideIds.has(p.id)).map(p => p.id));
+    S.guideHold = S.guideWait.size > 0; S.guideT = 0;
+    broadcast({ t: 'start', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, bgm: S.bgm, gw: [...S.guideWait], lp: S.tops.map(t => [Math.round(t.a0 * 1000) / 1000, Math.round(t.sx), Math.round(t.sy)]) });
     enterGameState(); uiEnterGame();
   }
+  // 試合前の操作の案内: on = 見たい(ロビーで設定) / off = 見ない・読み終わった
+  function setGuide(id, on) {
+    const G = S.guideIds || (S.guideIds = new Set());
+    if (on) G.add(id); else { G.delete(id); if (S.guideWait) S.guideWait.delete(id); }
+  }
+  // トーナメントの決め手のリプレイを飛ばす(部屋を仕切る人)
+  function skipReplay() { if (S.phase === 'replay' && S.replay) endReplay(); }
   // 試合の始まり: まず約2.5秒の開始演出 → 終わったら「3, 2, 1, GO」(カウントの音声もそこで鳴らす)
   function enterGameState() { S.phase = 'countdown'; S.phaseT = 3; S.goT = 0; S.introT = INTRO_TIME; }
   // =====================================================================
@@ -705,7 +718,7 @@ export function createCore(hooks) {
   // =====================================================================
   function recFrame() {
     if (!S.rec) return;
-    S.rec.push({ t: S.elapsed, s: S.tops.map(t => ({ x: t.x, y: t.y, ang: t.ang, spin: t.spin, alive: t.alive, out: t.out,
+    S.rec.push({ t: S.elapsed, s: S.tops.map(t => ({ x: t.x, y: t.y, fz: t.fz, ang: t.ang, spin: t.spin, alive: t.alive, out: t.out,
       awake: Math.max(0, t.awake), awakeCd: t.awakeCd, air: t.air, wob: Math.min(1, t.wob), railT: t.railT, railDir: t.railDir, sage: t.sage,
       burst: t.burst ? { parts: t.burst.parts.map(P => ({ x: P.x, y: P.y, z: P.z, vy: P.vy, rest: P.rest, melt: P.melt })) } : null })) });
     if (S.rec.length > 240) S.rec.shift(); // 4秒分あれば足りる
@@ -739,7 +752,8 @@ export function createCore(hooks) {
     const a = F[i], b = F[Math.min(F.length - 1, i + 1)], k = b.t > a.t ? clamp((RP.t - a.t) / (b.t - a.t), 0, 1) : 0;
     return S.tops.map((t, n) => {
       const A = a.s[n], B = b.s[n];
-      return { ...A, p: t.p, x: A.x + (B.x - A.x) * k, y: A.y + (B.y - A.y) * k, ang: A.ang + (B.ang - A.ang) * k };
+      return { ...A, p: t.p, x: A.x + (B.x - A.x) * k, y: A.y + (B.y - A.y) * k, ang: A.ang + (B.ang - A.ang) * k,
+        fz: A.fz != null && B.fz != null ? A.fz + (B.fz - A.fz) * k : A.fz };
     });
   }
   // トーナメントの応援: 観戦している人(この試合で戦っていない人)が「応援」を押したら、全員の画面に吹き出しを出す
@@ -764,7 +778,7 @@ export function createCore(hooks) {
     S.phase = 'lobby'; S.introT = 0; S.freezeT = 0;
     broadcastLobby();
   }
-  // ---- index.html 2127〜2571行目 ----
+  // ---- index.html 2143〜2598行目 ----
   const ZERO = { ax: 0, ay: 0, dashReq: false, awakeReq: false };
   const isAw = (t, type) => t.awake > 0 && t.p.type === type;
   // バランスの崩れやすさ = ブレード(wobRes) × タイプ(wobT。ラグナロクは装甲スリーブで崩れにくい)
@@ -897,8 +911,8 @@ export function createCore(hooks) {
         else if (!(t.awake <= 0 && t.awakeCd <= AW_GRACE)) inp.awakeReq = false; // チャージ残りわずかなら予約しておく
       }
       if (inp.sageReq) { inp.sageReq = false; if (canSage(t)) startSage(t); }
-      if (t.sage > 0) { t.sage -= dt; if (t.sage <= 0) { t.sage = 0; S.padDirty = true; } }
-      if (t.awake > 0) { t.awake -= dt; if (t.awake <= 0) { t.awake = 0; t.awakeCd = AWAKE_CHARGE; t.rubUsed = 0; t.cpuRub = 0.2 + Math.random() * 0.7; S.padDirty = true; } }
+      if (t.sage > 0) { t.sage -= dt; if (t.sage <= 0) { t.sage = 0; padMark(t.id); } }
+      if (t.awake > 0) { t.awake -= dt; if (t.awake <= 0) { t.awake = 0; t.awakeCd = AWAKE_CHARGE; t.rubUsed = 0; t.cpuRub = 0.2 + Math.random() * 0.7; padMark(t.id); } }
       else if (t.awakeCd > 0) {
         t.awakeCd = Math.max(0, t.awakeCd - dt);
         if (t.cpu) rubCharge(t, t.cpuRub * dt); // CPUもチャージ中はビットをこする(強さは毎回ランダム。人の平均くらい)
@@ -1108,6 +1122,8 @@ export function createCore(hooks) {
       if (impact > 8 && S.gimT <= 0) S.hits = (S.hits || 0) + 1; // ギミック用の衝突回数(軽いこすれは数えない)
     }
   
+    // --- 場外に飛んだコマ(勢いのまま飛んで、重力で落ちる) ---
+    for (const t of S.tops) if (t.fly) outFly(t, dt);
     // --- 壁・ポケット・回転切れ ---
     for (const t of A) {
       if (!t.alive || t.launching) continue;
@@ -1121,8 +1137,8 @@ export function createCore(hooks) {
         // エクストリームは壁にレールがあるので、地面を走っているコマは勢いよく当たってもレールが受け止める(場外にならない)
         const railCatch = S.stadium === 'extreme' && t.air <= 0;
         if (inPocket || (vr > OVER_SPEED && !railCatch) || (t.air > 0 && vr > 220)) {
-          const k = inPocket ? R + 14 : R + 45;
-          t.x = nx * k; t.y = ny * k; t.out = true; t.air = 0;
+          // 場外: その場から勢いのまま飛び出す(ポケットは穴へ落ちる・壁越えは放物線で外へ)。動きは outFly
+          startOutFly(t, inPocket, vr, nx, ny); t.out = true; t.air = 0;
           ko(t, inPocket ? 'pocket' : 'over');
           continue;
         }
@@ -1293,7 +1309,7 @@ export function createCore(hooks) {
     emit(['oil', t.idx, Math.round(t.x), Math.round(t.y), Math.round(tx), Math.round(ty)]);
   }
   function ko(t, reason) {
-    t.alive = false; t.awake = 0; S.lastKO = reason; S.padDirty = true;
+    t.alive = false; t.awake = 0; S.lastKO = reason; padMark(t.id);
     if (reason === 'burst') emit(['bu', t.idx, Math.round(t.x), Math.round(t.y), Math.round(t.burst.dx * 100), Math.round(t.burst.dy * 100)]);
     else emit(['h', Math.round(t.x), Math.round(t.y), 10, t.out ? 1 : 2]); // 5番目: 1=場外 2=回転切れ・転倒
     emit(['ko', t.idx, t.out ? 1 : 0, reason]); // 「〇〇 バースト！」などの表示(参加者の画面にも出す)
@@ -1335,8 +1351,11 @@ export function createCore(hooks) {
   function canAwaken(t) { return !t.launching && t.sage <= 0 && t.awake <= 0 && t.awakeCd <= 0 && t.spin > 5 && S.phase === 'battle'; }
   // 賢者モード: 前回の優勝者だけ・1試合に1回・覚醒中は使えない
   function canSage(t) { return t.sageOK && !t.sageUsed && t.alive && !t.launching && t.awake <= 0 && t.sage <= 0 && S.phase === 'battle'; }
-  function startSage(t) { t.sage = SAGE_TIME; t.sageUsed = true; S.padDirty = true; emit(['sg', t.idx]); }
-  function startAwaken(t) { t.awake = AWAKE_TIME; t.bounceT = 0; t.oilT = 0.25; S.padDirty = true; emit(['aw', t.idx]); }
+  function startSage(t) { t.sage = SAGE_TIME; t.sageUsed = true; padMark(t.id); emit(['sg', t.idx]); }
+  function startAwaken(t) { t.awake = AWAKE_TIME; t.bounceT = 0; t.oilT = 0.25; padMark(t.id); emit(['aw', t.idx]); }
+  // コントローラーの状態が変わったコマの持ち主を覚えておき、次の送信でその人にだけ送る
+  // (覚醒・脱落などは本人の表示しか変わらないので、全員へ送り直さない。試合が止まる・動き出すときだけ S.padDirty で全員へ)
+  function padMark(id) { (S.padIds || (S.padIds = new Set())).add(id); }
   function sendPads(only) {
     for (const [id, conn] of S.conns) {
       if (!conn.open || (only && id !== only)) continue;
@@ -1349,7 +1368,7 @@ export function createCore(hooks) {
         sh: t && t.launchAt != null ? 1 : 0 }); // sh: 発射済み
     }
   }
-  // 1対1の試合だけ、覚醒・賢者モードの瞬間にカットイン(トーナメントは3D召喚)を出して試合を止める
+  // 1対1の試合だけ、賢者モードの瞬間にカットイン・トーナメントの覚醒で3D召喚を出して試合を止める(個人戦などの覚醒は文字だけ)
   const cutinOn = () => S.tops && S.tops.length === 2;
   // 試合を止める長さを決める(ホスト・サーバー。参加者の画面には止まった状態が届く)
   function hostEvent(ev) {
@@ -1361,26 +1380,26 @@ export function createCore(hooks) {
         const seen = S.tour ? (S.tour.seen || (S.tour.seen = new Set())) : new Set();
         const short = !!S.cutShort && seen.has(p.id); seen.add(p.id); ev[2] = short ? 1 : 0;
         S.freezeT = short ? SUMMON_LEN.short : SUMMON_LEN.full;
-      } else S.freezeT = CUTIN_T;
+      } else return; // 個人戦・団体戦の1対1は文字だけ出す(試合は止めない)
     } else if (ev[0] === 'sg' && p) S.freezeT = CUTIN_T;
     else return;
     LOOP.acc = 0; S.padDirty = true;
   }
-  // ---- index.html 2727〜3327行目 ----
+  // ---- index.html 2755〜3360行目 ----
   const NET_HZ = 30, NET_DELAY = 110; // 送る回数(1秒あたり) / 再生の遅らせ(ミリ秒)
   const PH_CODE = { countdown: 0, battle: 1, replay: 2, result: 3 }, PH_NAME = ['countdown', 'battle', 'replay', 'result'];
   const SL_PH = ['in', 'hold', 'fly', 'impact', 'out'];
   const nr1 = v => Math.round((v || 0) * 10) / 10, nr2 = v => Math.round((v || 0) * 100) / 100;
-  // ---- index.html 3337〜3340行目 ----
+  // ---- index.html 3370〜3373行目 ----
   function makeSnap() {
     const list = hostDrawList();
     const o = list.map((t, i) => {
       const T = S.tops[i] || {};
       const fl = (t.alive ? 1 : 0) | (t.out ? 2 : 0) | (t.burst ? 4 : 0) | (t.launching ? 8 : 0) | (t.wait ? 16 : 0) | (T.sageOK ? 32 : 0) | (T.sageUsed ? 64 : 0);
       return [nr1(t.x), nr1(t.y), Math.round((t.ang || 0) * 1000) / 1000, nr1(t.spin), fl, nr2(t.awake), nr2(t.awakeCd), nr2(t.air), nr2(t.wob),
-        t.railT > 0 ? (t.railDir || 1) : 0, nr2(t.sage), nr2(t.lf), nr2(t.aimSel)];
+        t.railT > 0 ? (t.railDir || 1) : 0, nr2(t.sage), nr2(t.lf), nr2(t.aimSel), t.out ? nr1(t.fz) : 0]; // 最後: 場外に飛んだコマの高さ
     });
-    const snap = { t: 'st', ht: Math.round(performance.now()), ph: PH_CODE[S.phase] ?? 1, pt: nr2(S.phaseT), it: nr2(S.introT), fz: S.freezeT > 0 ? 1 : 0,
+    const snap = { t: 'st', ht: Math.round(performance.now()), ph: PH_CODE[S.phase] ?? 1, pt: nr2(S.phaseT), it: nr2(S.introT), fz: S.freezeT > 0 ? 1 : 0, gw: S.guideHold ? 1 : 0,
       tl: nr1(S.tl ?? TIME_LIMIT), el: nr2(S.elapsed), sl: S.slow ? [S.slow.idx, Math.round(S.slow.k * 1000) / 1000, SL_PH.indexOf(S.slow.ph)] : 0,
       rp: S.replay ? S.replay.loserIdx : -1, ta: nr2(S.tiltAmp), td: nr2(S.tiltDir), gt: S.gimT > 0 ? 1 : 0, hi: S.hits || 0, o, ev: S.pendingEv };
     list.forEach((t, i) => { if (t.burst && t.burst.parts) (snap.bp || (snap.bp = {}))[i] = t.burst.parts.map(P => [nr1(P.x), nr1(P.y), nr1(P.z), P.vy === 0 ? 0 : 1, P.rest ? 1 : 0, nr2(P.melt)]); });
@@ -1389,15 +1408,19 @@ export function createCore(hooks) {
   }
   function hostSendSnap(dt) {
     LOOP.snap += dt;
-    if (LOOP.snap < 1 / NET_HZ) return;
-    LOOP.snap = 0;
+    // 試合が止まっている間(カットイン・3D召喚)はコマが動かないので、止まった最初の1回のあとは0.5秒に1回だけ送る
+    // (応援などのイベントが出たときは、いつも通りすぐ送る。動き出したら1秒に30回へ戻る)
+    const frozen = (S.phase === 'battle' && S.freezeT > 0) || (S.phase === 'countdown' && S.guideHold); // 案内を待っている間も動かない
+    const gap = frozen && LOOP.fzSent && !S.pendingEv.length ? 0.5 : 1 / NET_HZ;
+    if (LOOP.snap < gap) return;
+    LOOP.snap = 0; LOOP.fzSent = frozen;
     if (!S.conns || !S.conns.size) { S.pendingEv = []; return; }
     broadcast(makeSnap());
   }
   // 描く・送るためのコマの状態(リプレイ中は記録をなめらかにつないだもの)
   function hostDrawList() {
     if (S.replay) return replayList();
-    return S.tops.map(t => ({ p: t.p, x: t.x, y: t.y, ang: t.ang, spin: t.spin, alive: t.alive, out: t.out,
+    return S.tops.map(t => ({ p: t.p, x: t.x, y: t.y, fz: t.fz, ang: t.ang, spin: t.spin, alive: t.alive, out: t.out,
       awake: Math.max(0, t.awake), awakeCd: t.awakeCd,
       air: t.air, wob: Math.min(1, t.wob), burst: t.burst, railT: t.railT, railDir: t.railDir, sage: t.sage,
       // シュート: 発射待ちか・飛んでいる割合・狙いの向き(矢印の表示用)
@@ -1406,7 +1429,11 @@ export function createCore(hooks) {
   }
   // 試合を dt 秒ぶん進める(ホストの画面の毎フレーム・サーバーの時計から呼ぶ)
   function hostTick(dt) {
-    if (S.phase === 'countdown' && S.introT > 0) {
+    if (S.phase === 'countdown' && S.guideHold) {
+      // 試合前の操作の案内を読んでいる人を待つ(全員読み終わったか、GUIDE_MAX 秒たったら開始演出へ)
+      S.guideT += dt;
+      if (!S.guideWait.size || S.guideT >= GUIDE_MAX) { S.guideHold = false; S.guideWait.clear(); uiGuideEnd(); }
+    } else if (S.phase === 'countdown' && S.introT > 0) {
       // 開始演出の間はカウントダウンを止めておく
       S.introT -= dt;
       if (S.introT <= 0) { S.introT = 0; uiIntroEnd(); }
@@ -1429,21 +1456,25 @@ export function createCore(hooks) {
       checkRailSlow(); // レールから飛び出す先に相手がいそうなら、スロー演出
     } else if (S.phase === 'replay') updateReplay(dt);     // 決め手のスロー再生
     else if (S.phase === 'result') updateBurstParts(dt); // 決着後も、飛んだパーツが落ちて溶けるところまで見せる
+    // 決着のあと(リプレイ・結果の画面)も、場外に飛んだコマは落ちきるまで動かす
+    if ((S.phase === 'replay' || S.phase === 'result') && S.tops) for (const t of S.tops) if (t.fly) outFly(t, dt);
   
-    // 参加者へ状態を送る: コントローラーの状態(覚醒の開始・終了や脱落はすぐに、それ以外は1秒に10回)と、画面の状態(座標など・1秒に30回)
+    // 参加者へ状態を送る: コントローラーの状態(覚醒の開始・終了や脱落はその人にだけすぐに、それ以外は全員へ1秒に10回)と、画面の状態(座標など・1秒に30回)
     if (S.role === 'host' && (S.phase === 'countdown' || S.phase === 'battle')) {
       LOOP.pad += dt;
-      if (LOOP.pad >= 0.1 || S.padDirty) { LOOP.pad = 0; S.padDirty = false; sendPads(); }
+      const padGap = S.phase === 'battle' && S.freezeT > 0 ? 1 : 0.1; // 試合が止まっている間は、ほとんど変わらないので1秒に1回
+      if (LOOP.pad >= padGap || S.padDirty) { LOOP.pad = 0; S.padDirty = false; if (S.padIds) S.padIds.clear(); sendPads(); }
+      else if (S.padIds && S.padIds.size) { for (const id of S.padIds) sendPads(id); S.padIds.clear(); } // 変わった人にだけ
     }
     if (S.role === 'host' && S.tops && S.tops.length && PH_CODE[S.phase] != null) hostSendSnap(dt);
   }
-  // ---- index.html 3346〜3410行目 ----
+  // ---- index.html 3379〜3455行目 ----
   function wallSegments(pk) { // ポケットの間の壁の範囲 [a0, a1]
     const out = [];
     for (let i = 0; i < pk.length; i++) out.push([pk[i] + POCKET_W, (i + 1 < pk.length ? pk[i + 1] : pk[0] + Math.PI * 2) - POCKET_W]);
     return out;
   }
-  // ---- index.html 4310〜4314行目 ----
+  // ---- index.html 4388〜4392行目 ----
   const BITS = {
     attack:   { L: 18, r: 6.5, hex: true },
     defense:  { L: 14, r: 8.5 },
@@ -1451,24 +1482,77 @@ export function createCore(hooks) {
     balance:  { L: 20, r: 6.05 },
     ragnarok: { L: 20, r: 6.05, sleeve: true },
   };
-  // ---- index.html 5454〜5460行目 ----
+  // ---- index.html 5532〜5538行目 ----
   // その地点の床の高さ(スタジアムの中 / 壁の上 / 場外の床)
   function groundAt(x, z) {
     const r = Math.hypot(x, z);
     return r <= R ? floorH(r) : r <= R + 30 ? BOWL_H + 24 : -68;
   }
-  // ---- index.html 5689〜5693行目 ----
+  // ---------- 場外に飛んだコマ ----------
+  // 壁を越えた・ポケットに落ちた瞬間から、その場の勢いのまま飛ぶ。重力で落ちて、壁の上・土台の斜面・遠くの床に当たると
+  // 弾んだり、すべったりして止まる(勢いがあればそのまま画面の外へ)。高さ t.fz はコマの軸先の高さ(床と同じ基準)
+  const OUT_G = 8 * AIR_H / (AIR_T * AIR_T); // 重力(ディフェンスの打ち上げの放物線と同じ強さ)
+  const OUT_TOP = BOWL_H + 24;               // 壁の上・外周のふちの高さ
+  const OUT_GROUND = -68;                    // 遠くの床の高さ
+  const inPocketAt = (x, y, r) => r < R + 26 && POCKETS.some(p => Math.abs(angDiff(Math.atan2(y, x), p)) < POCKET_W);
+  // その場所の、場外のコマが乗る面の高さ(壁の上 → 土台の斜面 → 遠くの床)
+  function outSurface(r) {
+    if (r < R) return floorH(r);
+    if (r <= R + 30) return OUT_TOP;
+    if (r <= R + 60) return OUT_TOP - (r - R - 30) * 3;
+    return OUT_GROUND;
+  }
+  function startOutFly(t, inPocket, vr, nx, ny) {
+    // 打ち上げられて空中にいたら、その放物線の高さと上下の速さを引き継ぐ
+    const f = t.air > 0 ? 1 - t.air / AIR_T : 0;
+    let z = BOWL_H + (t.air > 0 ? Math.sin(Math.PI * f) * AIR_H : 0);
+    let vz = t.air > 0 ? AIR_H * Math.PI / AIR_T * Math.cos(Math.PI * f) : 0;
+    if (inPocket) {
+      // ポケット: 穴へすべり込んで落ちる(外向きの勢いは少し弱まる。止まりかけでも穴へは入る)
+      t.vx *= 0.6; t.vy *= 0.6;
+      const vo = t.vx * nx + t.vy * ny; if (vo < 120) { t.vx += nx * (120 - vo); t.vy += ny * (120 - vo); }
+    } else {
+      // 壁越え: 壁の上へ乗り上げて飛び出す(地面を走っていたら、勢いに応じて少し跳ね上がる)
+      z = Math.max(z, OUT_TOP);
+      if (t.air <= 0) vz = Math.max(vz, vr * 0.45);
+    }
+    t.fz = z; t.vz = vz; t.fly = true;
+  }
+  function outFly(t, dt) {
+    t.vz -= OUT_G * dt;
+    t.x += t.vx * dt; t.y += t.vy * dt; t.fz += t.vz * dt;
+    const r = Math.hypot(t.x, t.y) || 1, nx = t.x / r, ny = t.y / r;
+    if (inPocketAt(t.x, t.y, r)) {
+      // ポケットの中: 奥の壁で止められながら、穴の底へ落ちていく
+      const lim = R + 26 - TOP_R * 0.6;
+      if (r > lim && t.fz < OUT_TOP) {
+        const vo = t.vx * nx + t.vy * ny; if (vo > 0) { t.vx -= 1.3 * vo * nx; t.vy -= 1.3 * vo * ny; }
+        t.x = nx * lim; t.y = ny * lim;
+      }
+      if (t.fz < -220) t.fly = false; // 穴の底まで落ちた(もう見えない)
+      return;
+    }
+    const g = outSurface(r);
+    if (t.fz <= g) {
+      t.fz = g;
+      if (r > R + 30 && r < R + 60) { t.vz = 0; t.vx += nx * 500 * dt; t.vy += ny * 500 * dt; }          // 土台の斜面: すべり落ちる
+      else if (t.vz < -250) { t.vz = -t.vz * 0.3; t.vx *= 0.75; t.vy *= 0.75; }                     // 強く落ちたら小さく弾む
+      else { t.vz = 0; const k = Math.exp(-1.8 * dt); t.vx *= k; t.vy *= k; if (Math.hypot(t.vx, t.vy) < 4) t.fly = false; } // すべって止まる
+    }
+    if (r > R + 2500) t.fly = false; // 遠くへ行った
+  }
+  // ---- index.html 5767〜5824行目 ----
   const INTRO_TIME = 2.5; // バトル開始の演出の長さ(秒)
-  // ---- index.html 8237〜8237行目 ----
+  // ---- index.html 8468〜8468行目 ----
   const RUB_CAP = 0.1;      // 0.1秒あたりに進められる上限(秒) → こすり続けても速さは最大2倍
   const RUB_MAX = AWAKE_CHARGE / 2; // 1回のチャージでこすって縮められるのは半分まで
-  // ---- index.html 8262〜8263行目 ----
+  // ---- index.html 8493〜8494行目 ----
   function rubCharge(t, sec) {
     if (!(t && t.alive && t.awake <= 0 && t.awakeCd > 0 && S.phase === 'battle')) return false;
     const ok = Math.max(0, Math.min(sec, RUB_MAX - (t.rubUsed || 0))); // 半分まで縮めたら、それ以上はこすっても進まない
     t.rubUsed = (t.rubUsed || 0) + ok; t.awakeCd = Math.max(0, t.awakeCd - ok);
     return ok > 0;
   }
-  // ---- index.html 8306〜8311行目 ----
-  return { S, LOOP, DT, TIME_LIMIT, MAX_PLAYERS, TOUR_MIN, PART_MELT, TYPES, BLADES, STADIUMS, MODE_INFO, TEAM_NAMES, clamp, isImgData, makePlayer, addCpu, kick, reject, onHostData, onLeave, broadcast, broadcastLobby, hostStart, hostAgain, toLobby, tourPlayNext, tourSkipCpu, tourP, tourNext, skipToResult, cpuOnlyBattle, nextIsCpuMatch, hostTick, step, checkWin, initTops, launchMatch, makeSnap, sendPads, fastSimulate };
+  // ---- index.html 8537〜8542行目 ----
+  return { S, LOOP, DT, TIME_LIMIT, MAX_PLAYERS, TOUR_MIN, PART_MELT, TYPES, BLADES, STADIUMS, MODE_INFO, TEAM_NAMES, clamp, isImgData, makePlayer, addCpu, kick, reject, onHostData, onLeave, broadcast, broadcastLobby, hostStart, hostAgain, toLobby, tourPlayNext, tourSkipCpu, tourP, tourNext, skipToResult, cpuOnlyBattle, nextIsCpuMatch, hostTick, step, checkWin, initTops, launchMatch, makeSnap, sendPads, fastSimulate, skipReplay };
 }
