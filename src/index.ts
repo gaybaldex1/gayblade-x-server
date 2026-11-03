@@ -141,7 +141,7 @@ export class GameRoom extends DurableObject<Env> {
 		}
 		if (!S.conns.has(id)) return; // hello の前のメッセージは受け付けない
 		if (d.t === 'rdy') { if (this.readyWait) this.readyWait.delete(id); return; } // 試合の画面の準備ができた
-		if (['set', 'img', 's', 'a', 'shoot', 'rub', 'aim'].includes(d.t)) {
+		if (['set', 'img', 's', 'a', 'shoot', 'rub', 'aim', 'cheer'].includes(d.t)) {
 			C.onHostData(conn, d);
 			if (d.t === 'img') this.dirty = true;
 			return;

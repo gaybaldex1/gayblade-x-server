@@ -182,6 +182,9 @@ export function createCore(hooks) {
   // 演出で試合を止める長さ(秒): 1対1のカットイン / トーナメントの3D召喚(通常・2回目以降の短縮版)
   const CUTIN_T = 2.2;
   const SUMMON_LEN = { full: 3.2, short: 1.4 };
+  // 戦闘BGMの曲数(mn5・bgm2・bgm3・bgm4)。試合ごとにホスト(サーバー)が1曲選んで、全員の端末で同じ曲を流す
+  const BGM_COUNT = 4;
+  const CHEER_GAP = 300; // 応援: 同じ人が続けて送れる間隔(ミリ秒)
   
   // ---------- 全体の状態 ----------
   const S = {
@@ -210,7 +213,7 @@ export function createCore(hooks) {
   const battleTime = () => isHost() ? S.elapsed : TIME_LIMIT - S.tl; // バトル開始からの経過秒
   // 試合を進める時計(ホスト・サーバー): acc = 物理の固定ステップのたまり / pad = コントローラーの状態を送る間隔 / snap = 画面の状態を送る間隔
   const LOOP = { acc: 0, pad: 0, snap: 0 };
-  // ---- index.html 916〜1121行目 ----
+  // ---- index.html 952〜1160行目 ----
   function randType() { const k = Object.keys(TYPES); return k[Math.floor(Math.random() * k.length)]; }
   const isImgData = d => typeof d === 'string' && d.startsWith('data:image/') && d.length < 300000;
   
@@ -236,7 +239,7 @@ export function createCore(hooks) {
     broadcast({ t: 'img', id: p.id, data: null });
     broadcastLobby();
   }
-  // ---- index.html 1177〜1201行目 ----
+  // ---- index.html 1216〜1240行目 ----
   function onHostData(conn, d) {
     const id = conn.peer;
     const inp = () => S.inputs[id] || (S.inputs[id] = { ax: 0, ay: 0, dashReq: false, awakeReq: false });
@@ -292,6 +295,7 @@ export function createCore(hooks) {
         if (t && t.launchAt == null && !S.shots[id]) t.aimSel = clamp(+d.aim || 0, -AIM_MAX, AIM_MAX);
         break;
       }
+      case 'cheer': hostCheer(id); break; // トーナメントの応援(観戦している人)
     }
   }
   function reject(conn, reason) { conn.send({ t: 'reject', r: reason }); setTimeout(() => conn.close(), 300); }
@@ -314,7 +318,7 @@ export function createCore(hooks) {
   function broadcast(msg) { for (const c of S.conns.values()) if (c.open) c.send(msg); }
   // lead: 部屋を仕切る人(専用サーバーのとき) / tour: トーナメント中か
   function broadcastLobby() { broadcast({ t: 'lobby', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, stats: S.stats, hist: S.hist, lead: S.lead || null, tour: S.tour ? 1 : 0 }); uiLobby(); }
-  // ---- index.html 1240〜1316行目 ----
+  // ---- index.html 1279〜1356行目 ----
   function hostStart() {
     if (S.mode === 'tourney') return S.tour ? tourPlayNext() : tourStart();
     const alivePlayers = S.players.filter(p => !p.left);
@@ -501,7 +505,8 @@ export function createCore(hooks) {
     S.players = players;
     initTops();
     S.elapsed = 0; S.tl = TIME_LIMIT; S.pendingEv = []; S.pendingEnd = null; S.lastKO = null; S.freezeT = 0;
-    broadcast({ t: 'start', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, lp: S.tops.map(t => [Math.round(t.a0 * 1000) / 1000, Math.round(t.sx), Math.round(t.sy)]) });
+    S.bgm = Math.floor(Math.random() * BGM_COUNT); // この試合の戦闘BGM(0 = mn5)
+    broadcast({ t: 'start', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, bgm: S.bgm, lp: S.tops.map(t => [Math.round(t.a0 * 1000) / 1000, Math.round(t.sx), Math.round(t.sy)]) });
     enterGameState(); uiEnterGame();
   }
   // 試合の始まり: まず約2.5秒の開始演出 → 終わったら「3, 2, 1, GO」(カウントの音声もそこで鳴らす)
@@ -737,6 +742,17 @@ export function createCore(hooks) {
       return { ...A, p: t.p, x: A.x + (B.x - A.x) * k, y: A.y + (B.y - A.y) * k, ang: A.ang + (B.ang - A.ang) * k };
     });
   }
+  // トーナメントの応援: 観戦している人(この試合で戦っていない人)が「応援」を押したら、全員の画面に吹き出しを出す
+  // イベント ['ch', 応援した人のID, 名前, 色, 出てくる側(0 = 左・1 = 右), 高さ(0〜100)]
+  function hostCheer(id) {
+    if (S.mode !== 'tourney' || !S.tour || !(S.phase === 'countdown' || S.phase === 'battle' || S.phase === 'replay')) return;
+    if (S.players.some(p => p.id === id)) return; // 戦っている本人は応援できない
+    const p = tourP(id); if (!p) return;
+    const now = Date.now(), at = S.cheerAt || (S.cheerAt = {});
+    if (now - (at[id] || 0) < CHEER_GAP) return;
+    at[id] = now;
+    emit(['ch', id, p.name, p.color, Math.random() < 0.5 ? 0 : 1, Math.round(Math.random() * 100)]);
+  }
   // 決着後の「もう一度」(トーナメントは表へ)
   function hostAgain() { if (S.tour) uiBracket(); else hostStart(); }
   // ロビーへ戻る(試合の途中でも。トーナメントの途中・終了後は、参加者全員をロビーに戻す)
@@ -748,7 +764,7 @@ export function createCore(hooks) {
     S.phase = 'lobby'; S.introT = 0; S.freezeT = 0;
     broadcastLobby();
   }
-  // ---- index.html 2086〜2518行目 ----
+  // ---- index.html 2127〜2571行目 ----
   const ZERO = { ax: 0, ay: 0, dashReq: false, awakeReq: false };
   const isAw = (t, type) => t.awake > 0 && t.p.type === type;
   // バランスの崩れやすさ = ブレード(wobRes) × タイプ(wobT。ラグナロクは装甲スリーブで崩れにくい)
@@ -1350,12 +1366,12 @@ export function createCore(hooks) {
     else return;
     LOOP.acc = 0; S.padDirty = true;
   }
-  // ---- index.html 2674〜3274行目 ----
+  // ---- index.html 2727〜3327行目 ----
   const NET_HZ = 30, NET_DELAY = 110; // 送る回数(1秒あたり) / 再生の遅らせ(ミリ秒)
   const PH_CODE = { countdown: 0, battle: 1, replay: 2, result: 3 }, PH_NAME = ['countdown', 'battle', 'replay', 'result'];
   const SL_PH = ['in', 'hold', 'fly', 'impact', 'out'];
   const nr1 = v => Math.round((v || 0) * 10) / 10, nr2 = v => Math.round((v || 0) * 100) / 100;
-  // ---- index.html 3284〜3287行目 ----
+  // ---- index.html 3337〜3340行目 ----
   function makeSnap() {
     const list = hostDrawList();
     const o = list.map((t, i) => {
@@ -1421,13 +1437,13 @@ export function createCore(hooks) {
     }
     if (S.role === 'host' && S.tops && S.tops.length && PH_CODE[S.phase] != null) hostSendSnap(dt);
   }
-  // ---- index.html 3293〜3357行目 ----
+  // ---- index.html 3346〜3410行目 ----
   function wallSegments(pk) { // ポケットの間の壁の範囲 [a0, a1]
     const out = [];
     for (let i = 0; i < pk.length; i++) out.push([pk[i] + POCKET_W, (i + 1 < pk.length ? pk[i + 1] : pk[0] + Math.PI * 2) - POCKET_W]);
     return out;
   }
-  // ---- index.html 4227〜4231行目 ----
+  // ---- index.html 4310〜4314行目 ----
   const BITS = {
     attack:   { L: 18, r: 6.5, hex: true },
     defense:  { L: 14, r: 8.5 },
@@ -1435,24 +1451,24 @@ export function createCore(hooks) {
     balance:  { L: 20, r: 6.05 },
     ragnarok: { L: 20, r: 6.05, sleeve: true },
   };
-  // ---- index.html 5371〜5377行目 ----
+  // ---- index.html 5454〜5460行目 ----
   // その地点の床の高さ(スタジアムの中 / 壁の上 / 場外の床)
   function groundAt(x, z) {
     const r = Math.hypot(x, z);
     return r <= R ? floorH(r) : r <= R + 30 ? BOWL_H + 24 : -68;
   }
-  // ---- index.html 5606〜5610行目 ----
+  // ---- index.html 5689〜5693行目 ----
   const INTRO_TIME = 2.5; // バトル開始の演出の長さ(秒)
-  // ---- index.html 8043〜8043行目 ----
+  // ---- index.html 8237〜8237行目 ----
   const RUB_CAP = 0.1;      // 0.1秒あたりに進められる上限(秒) → こすり続けても速さは最大2倍
   const RUB_MAX = AWAKE_CHARGE / 2; // 1回のチャージでこすって縮められるのは半分まで
-  // ---- index.html 8068〜8069行目 ----
+  // ---- index.html 8262〜8263行目 ----
   function rubCharge(t, sec) {
     if (!(t && t.alive && t.awake <= 0 && t.awakeCd > 0 && S.phase === 'battle')) return false;
     const ok = Math.max(0, Math.min(sec, RUB_MAX - (t.rubUsed || 0))); // 半分まで縮めたら、それ以上はこすっても進まない
     t.rubUsed = (t.rubUsed || 0) + ok; t.awakeCd = Math.max(0, t.awakeCd - ok);
     return ok > 0;
   }
-  // ---- index.html 8112〜8117行目 ----
+  // ---- index.html 8306〜8311行目 ----
   return { S, LOOP, DT, TIME_LIMIT, MAX_PLAYERS, TOUR_MIN, PART_MELT, TYPES, BLADES, STADIUMS, MODE_INFO, TEAM_NAMES, clamp, isImgData, makePlayer, addCpu, kick, reject, onHostData, onLeave, broadcast, broadcastLobby, hostStart, hostAgain, toLobby, tourPlayNext, tourSkipCpu, tourP, tourNext, skipToResult, cpuOnlyBattle, nextIsCpuMatch, hostTick, step, checkWin, initTops, launchMatch, makeSnap, sendPads, fastSimulate };
 }
