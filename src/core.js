@@ -64,6 +64,7 @@ export function createCore(hooks) {
   const AIM_MAX = 0.7, AIM_PC = 0.55;
   // トーナメントだけの演出
   const REPLAY_PRE = 1.1, REPLAY_POST = 0.3, REPLAY_SPEED = 0.42; // 決め手のリプレイ: 決着の何秒前から何秒後まで / 再生速度
+  const REPLAY_LEAD = 0.5; // リプレイの始まり: 虹色のトランジションで画面がおおわれるまで、決着した場面のまま待つ時間(秒)
   const LAUNCH_H = 110;       // カウントダウン中に構えている高さ
   
   // タイプ別性能(mass:重さ accel:操作の効き dash:(未使用) decay:回転の減りやすさ hit:攻撃力 guard:被ダメ倍率 recv:弾かれやすさ slope:中央へ戻る力)
@@ -215,7 +216,7 @@ export function createCore(hooks) {
   const battleTime = () => isHost() ? S.elapsed : TIME_LIMIT - S.tl; // バトル開始からの経過秒
   // 試合を進める時計(ホスト・サーバー): acc = 物理の固定ステップのたまり / pad = コントローラーの状態を送る間隔 / snap = 画面の状態を送る間隔
   const LOOP = { acc: 0, pad: 0, snap: 0, fzSent: false }; // fzSent: 試合が止まってから、止まった状態をもう送ったか
-  // ---- index.html 964〜1174行目 ----
+  // ---- index.html 965〜1176行目 ----
   function randType() { const k = Object.keys(TYPES); return k[Math.floor(Math.random() * k.length)]; }
   const isImgData = d => typeof d === 'string' && d.startsWith('data:image/') && d.length < 300000;
   
@@ -241,7 +242,7 @@ export function createCore(hooks) {
     broadcast({ t: 'img', id: p.id, data: null });
     broadcastLobby();
   }
-  // ---- index.html 1230〜1254行目 ----
+  // ---- index.html 1232〜1256行目 ----
   function onHostData(conn, d) {
     const id = conn.peer;
     const inp = () => S.inputs[id] || (S.inputs[id] = { ax: 0, ay: 0, dashReq: false, awakeReq: false });
@@ -321,7 +322,7 @@ export function createCore(hooks) {
   function broadcast(msg) { for (const c of S.conns.values()) if (c.open) c.send(msg); }
   // lead: 部屋を仕切る人(専用サーバーのとき) / tour: トーナメント中か
   function broadcastLobby() { broadcast({ t: 'lobby', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, stats: S.stats, hist: S.hist, lead: S.lead || null, tour: S.tour ? 1 : 0 }); uiLobby(); }
-  // ---- index.html 1293〜1371行目 ----
+  // ---- index.html 1295〜1373行目 ----
   function hostStart() {
     if (S.mode === 'tourney') return S.tour ? tourPlayNext() : tourStart();
     const alivePlayers = S.players.filter(p => !p.left);
@@ -730,12 +731,13 @@ export function createCore(hooks) {
     if (frames.length < 5) return endBattle(pe.w, pe.r);
     const loser = S.tops.find(t => t.id !== pe.w);
     S.replay = { frames, i: 0, t: frames[0].t, t1: frames[frames.length - 1].t, pe, loserIdx: loser ? loser.idx : 0,
-      ev: (S.recEv || []).filter(e => e[0] >= frames[0].t && e[0] <= t1), evI: 0, hold: 0 };
+      ev: (S.recEv || []).filter(e => e[0] >= frames[0].t && e[0] <= t1), evI: 0, hold: 0, lead: REPLAY_LEAD };
     S.phase = 'replay';
     uiReplayStart(frames);
   }
   function updateReplay(dt) {
     const RP = S.replay; if (!RP) return;
+    if (RP.lead > 0) { RP.lead -= dt; return; } // トランジションで画面がおおわれるまでは、決着した場面のまま
     RP.t += dt * REPLAY_SPEED;
     while (RP.evI < RP.ev.length && RP.ev[RP.evI][0] <= RP.t) { const e = RP.ev[RP.evI++][1]; onEvent(e); if (S.role === 'host') S.pendingEv.push(e); } // 当たりの火花・音も同じ時刻に(参加者へも)
     if (RP.t >= RP.t1) { RP.hold += dt; if (RP.hold > 0.7) endReplay(); }
@@ -778,7 +780,7 @@ export function createCore(hooks) {
     S.phase = 'lobby'; S.introT = 0; S.freezeT = 0;
     broadcastLobby();
   }
-  // ---- index.html 2143〜2598行目 ----
+  // ---- index.html 2145〜2601行目 ----
   const ZERO = { ax: 0, ay: 0, dashReq: false, awakeReq: false };
   const isAw = (t, type) => t.awake > 0 && t.p.type === type;
   // バランスの崩れやすさ = ブレード(wobRes) × タイプ(wobT。ラグナロクは装甲スリーブで崩れにくい)
@@ -1385,12 +1387,12 @@ export function createCore(hooks) {
     else return;
     LOOP.acc = 0; S.padDirty = true;
   }
-  // ---- index.html 2755〜3360行目 ----
+  // ---- index.html 2761〜3366行目 ----
   const NET_HZ = 30, NET_DELAY = 110; // 送る回数(1秒あたり) / 再生の遅らせ(ミリ秒)
   const PH_CODE = { countdown: 0, battle: 1, replay: 2, result: 3 }, PH_NAME = ['countdown', 'battle', 'replay', 'result'];
   const SL_PH = ['in', 'hold', 'fly', 'impact', 'out'];
   const nr1 = v => Math.round((v || 0) * 10) / 10, nr2 = v => Math.round((v || 0) * 100) / 100;
-  // ---- index.html 3370〜3373行目 ----
+  // ---- index.html 3376〜3379行目 ----
   function makeSnap() {
     const list = hostDrawList();
     const o = list.map((t, i) => {
@@ -1419,7 +1421,7 @@ export function createCore(hooks) {
   }
   // 描く・送るためのコマの状態(リプレイ中は記録をなめらかにつないだもの)
   function hostDrawList() {
-    if (S.replay) return replayList();
+    if (S.replay && !(S.replay.lead > 0)) return replayList(); // トランジションの前半は、まだ決着した場面のまま見せる
     return S.tops.map(t => ({ p: t.p, x: t.x, y: t.y, fz: t.fz, ang: t.ang, spin: t.spin, alive: t.alive, out: t.out,
       awake: Math.max(0, t.awake), awakeCd: t.awakeCd,
       air: t.air, wob: Math.min(1, t.wob), burst: t.burst, railT: t.railT, railDir: t.railDir, sage: t.sage,
@@ -1468,13 +1470,13 @@ export function createCore(hooks) {
     }
     if (S.role === 'host' && S.tops && S.tops.length && PH_CODE[S.phase] != null) hostSendSnap(dt);
   }
-  // ---- index.html 3379〜3455行目 ----
+  // ---- index.html 3385〜3461行目 ----
   function wallSegments(pk) { // ポケットの間の壁の範囲 [a0, a1]
     const out = [];
     for (let i = 0; i < pk.length; i++) out.push([pk[i] + POCKET_W, (i + 1 < pk.length ? pk[i + 1] : pk[0] + Math.PI * 2) - POCKET_W]);
     return out;
   }
-  // ---- index.html 4388〜4392行目 ----
+  // ---- index.html 4679〜4683行目 ----
   const BITS = {
     attack:   { L: 18, r: 6.5, hex: true },
     defense:  { L: 14, r: 8.5 },
@@ -1482,7 +1484,7 @@ export function createCore(hooks) {
     balance:  { L: 20, r: 6.05 },
     ragnarok: { L: 20, r: 6.05, sleeve: true },
   };
-  // ---- index.html 5532〜5538行目 ----
+  // ---- index.html 5826〜5832行目 ----
   // その地点の床の高さ(スタジアムの中 / 壁の上 / 場外の床)
   function groundAt(x, z) {
     const r = Math.hypot(x, z);
@@ -1541,18 +1543,18 @@ export function createCore(hooks) {
     }
     if (r > R + 2500) t.fly = false; // 遠くへ行った
   }
-  // ---- index.html 5767〜5824行目 ----
+  // ---- index.html 6061〜6118行目 ----
   const INTRO_TIME = 2.5; // バトル開始の演出の長さ(秒)
-  // ---- index.html 8468〜8468行目 ----
+  // ---- index.html 8827〜8827行目 ----
   const RUB_CAP = 0.1;      // 0.1秒あたりに進められる上限(秒) → こすり続けても速さは最大2倍
   const RUB_MAX = AWAKE_CHARGE / 2; // 1回のチャージでこすって縮められるのは半分まで
-  // ---- index.html 8493〜8494行目 ----
+  // ---- index.html 8852〜8853行目 ----
   function rubCharge(t, sec) {
     if (!(t && t.alive && t.awake <= 0 && t.awakeCd > 0 && S.phase === 'battle')) return false;
     const ok = Math.max(0, Math.min(sec, RUB_MAX - (t.rubUsed || 0))); // 半分まで縮めたら、それ以上はこすっても進まない
     t.rubUsed = (t.rubUsed || 0) + ok; t.awakeCd = Math.max(0, t.awakeCd - ok);
     return ok > 0;
   }
-  // ---- index.html 8537〜8542行目 ----
+  // ---- index.html 8896〜8901行目 ----
   return { S, LOOP, DT, TIME_LIMIT, MAX_PLAYERS, TOUR_MIN, PART_MELT, TYPES, BLADES, STADIUMS, MODE_INFO, TEAM_NAMES, clamp, isImgData, makePlayer, addCpu, kick, reject, onHostData, onLeave, broadcast, broadcastLobby, hostStart, hostAgain, toLobby, tourPlayNext, tourSkipCpu, tourP, tourNext, skipToResult, cpuOnlyBattle, nextIsCpuMatch, hostTick, step, checkWin, initTops, launchMatch, makeSnap, sendPads, fastSimulate, skipReplay };
 }
