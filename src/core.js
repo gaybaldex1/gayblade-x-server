@@ -31,6 +31,9 @@ export function createCore(hooks) {
   const ORBIT_AW = 1.4;       // アタック: 覚醒中の周回スピード倍率
   const ORBIT_DRAIN = 1.5;    // アタック: 覚醒中のスタミナの減り倍率(1.8 → 1.5 に緩和)
   const BOUNCE_P = 0.45;      // ディフェンス: 上下運動の周期(秒)
+  const BOUNCE_OIL_WOB = 0.10;  // ディフェンス覚醒: 跳ねて着地した場所にローションがあると、滑ってバランスが崩れる量(1回の着地あたり)
+  const BOUNCE_OIL_KICK = 120;  // 同: 着地した瞬間にローションで横へ流される速さ
+  const BOUNCE_OIL_WAVE = 0.5;  // 同: ローションの上に着地したときの衝撃波の強さの倍率(踏ん張れないので半分)
   const AIR_T = 0.45;         // ディフェンス: 打ち上げられた相手の滞空時間(秒)
   const AIR_H = 90;           // ディフェンス: 打ち上げられた相手の高さ(見た目)
   // バランス崩れ(0〜1)。1になると転倒して脱落。回転が速いほど早く立ち直り、遅いと立ち直れず悪化する
@@ -216,7 +219,7 @@ export function createCore(hooks) {
   const battleTime = () => isHost() ? S.elapsed : TIME_LIMIT - S.tl; // バトル開始からの経過秒
   // 試合を進める時計(ホスト・サーバー): acc = 物理の固定ステップのたまり / pad = コントローラーの状態を送る間隔 / snap = 画面の状態を送る間隔
   const LOOP = { acc: 0, pad: 0, snap: 0, fzSent: false }; // fzSent: 試合が止まってから、止まった状態をもう送ったか
-  // ---- index.html 1111〜1322行目 ----
+  // ---- index.html 1124〜1338行目 ----
   function randType() { const k = Object.keys(TYPES); return k[Math.floor(Math.random() * k.length)]; }
   const isImgData = d => typeof d === 'string' && d.startsWith('data:image/') && d.length < 300000;
   
@@ -225,7 +228,7 @@ export function createCore(hooks) {
     const color = PLAYER_COLORS.find(c => !used.has(c)) || PLAYER_COLORS[0];
     const cnt = [0, 0];
     S.players.forEach(p => { if (p.team < 2) cnt[p.team]++; });
-    return { id, name, cpu, type, blade: BLADES[blade] ? blade : 'tiger', color, team: cnt[0] <= cnt[1] ? 0 : 1, left: false };
+    return { id, name, cpu, type, blade: BLADES[blade] ? blade : 'tiger', color, team: cnt[0] <= cnt[1] ? 0 : 1, left: false, og: false }; // og: ロビーで「OGAY!」(準備できた)を押したか
   }
   // CPUを1人追加する(部屋を作った人の操作)
   function addCpu() {
@@ -242,7 +245,7 @@ export function createCore(hooks) {
     broadcast({ t: 'img', id: p.id, data: null });
     broadcastLobby();
   }
-  // ---- index.html 1378〜1402行目 ----
+  // ---- index.html 1394〜1418行目 ----
   function onHostData(conn, d) {
     const id = conn.peer;
     const inp = () => S.inputs[id] || (S.inputs[id] = { ax: 0, ay: 0, dashReq: false, awakeReq: false });
@@ -261,9 +264,12 @@ export function createCore(hooks) {
       case 'set': {
         const p = S.players.find(p => p.id === id);
         if (!p || S.phase !== 'lobby') return;
-        if (TYPES[d.type]) p.type = d.type;
-        if (BLADES[d.blade]) p.blade = d.blade;
+        let changed = false; // ビット・ブレードを変えたら、押していた「OGAY!」は取り消し(選び直したので、もう一度確認してもらう)
+        if (TYPES[d.type] && d.type !== p.type) { p.type = d.type; changed = true; }
+        if (BLADES[d.blade] && d.blade !== p.blade) { p.blade = d.blade; changed = true; }
         if (Number.isInteger(d.team) && d.team >= 0 && d.team < 4) p.team = d.team;
+        if (typeof d.name === 'string') { const n = d.name.trim().slice(0, 10); if (n) p.name = n; } // ロビーでの名前の変更
+        if (typeof d.og === 'boolean') p.og = d.og; else if (changed) p.og = false;
         broadcastLobby();
         break;
       }
@@ -322,7 +328,7 @@ export function createCore(hooks) {
   function broadcast(msg) { for (const c of S.conns.values()) if (c.open) c.send(msg); }
   // lead: 部屋を仕切る人(専用サーバーのとき) / tour: トーナメント中か
   function broadcastLobby() { broadcast({ t: 'lobby', players: S.players, mode: S.mode, stadium: S.stadium, sage: S.sageIds, stats: S.stats, hist: S.hist, lead: S.lead || null, tour: S.tour ? 1 : 0 }); uiLobby(); }
-  // ---- index.html 1448〜1526行目 ----
+  // ---- index.html 1464〜1545行目 ----
   // 1vs1の本格的な試合か(トーナメント・インターネット対戦): 決め手のリプレイ・3D召喚・エクストリームの確定演出が出る
   function duelMode() { return S.mode === 'tourney' || S.mode === 'online'; }
   function hostStart() {
@@ -779,12 +785,13 @@ export function createCore(hooks) {
   function toLobby() {
     if (S.tour) { S.players = S.tour.roster; S.tour = null; }
     S.players = S.players.filter(p => !p.left);
+    S.players.forEach(p => p.og = false); // 次の試合に向けて、「OGAY!」はみんな外す
     S.tops = []; S.pendingEnd = null; S.replay = null; S.slow = null; S.kakutei = null;
     uiToLobby();
     S.phase = 'lobby'; S.introT = 0; S.freezeT = 0;
     broadcastLobby();
   }
-  // ---- index.html 2503〜2963行目 ----
+  // ---- index.html 2554〜3015行目 ----
   const ZERO = { ax: 0, ay: 0, dashReq: false, awakeReq: false };
   const isAw = (t, type) => t.awake > 0 && t.p.type === type;
   // バランスの崩れやすさ = ブレード(wobRes) × タイプ(wobT。ラグナロクは装甲スリーブで崩れにくい)
@@ -1030,7 +1037,16 @@ export function createCore(hooks) {
           decayMul = 0;
         } else if (kind === 'defense') {
           t.bounceT += dt;
-          if (t.bounceT >= BOUNCE_P) { t.bounceT -= BOUNCE_P; shockwave(t, 90, 140); }
+          if (t.bounceT >= BOUNCE_P) {
+            t.bounceT -= BOUNCE_P;
+            // 跳ねて着地した場所にローション(相手のオイル)があると、ツルッと滑る: バランスが崩れ、横へ流され、衝撃波も弱まる
+            if (t.slip) {
+              t.wob += BOUNCE_OIL_WOB * wobK(t);
+              const sa = Math.random() * Math.PI * 2;
+              t.vx += Math.cos(sa) * BOUNCE_OIL_KICK; t.vy += Math.sin(sa) * BOUNCE_OIL_KICK;
+            }
+            shockwave(t, 90, 140 * (t.slip ? BOUNCE_OIL_WAVE : 1));
+          }
         } else if (kind === 'balance') {
           t.oilT -= dt;
           if (t.oilT <= 0) { t.oilT = OIL_INTERVAL; launchOil(t); }
@@ -1391,12 +1407,12 @@ export function createCore(hooks) {
     else return;
     LOOP.acc = 0; S.padDirty = true;
   }
-  // ---- index.html 3130〜3735行目 ----
+  // ---- index.html 3182〜3796行目 ----
   const NET_HZ = 30, NET_DELAY = 110; // 送る回数(1秒あたり) / 再生の遅らせ(ミリ秒)
   const PH_CODE = { countdown: 0, battle: 1, replay: 2, result: 3 }, PH_NAME = ['countdown', 'battle', 'replay', 'result'];
   const SL_PH = ['in', 'hold', 'fly', 'impact', 'out'];
   const nr1 = v => Math.round((v || 0) * 10) / 10, nr2 = v => Math.round((v || 0) * 100) / 100;
-  // ---- index.html 3745〜3748行目 ----
+  // ---- index.html 3806〜3809行目 ----
   function makeSnap() {
     const list = hostDrawList();
     const o = list.map((t, i) => {
@@ -1474,13 +1490,13 @@ export function createCore(hooks) {
     }
     if (S.role === 'host' && S.tops && S.tops.length && PH_CODE[S.phase] != null) hostSendSnap(dt);
   }
-  // ---- index.html 3754〜3830行目 ----
+  // ---- index.html 3815〜3891行目 ----
   function wallSegments(pk) { // ポケットの間の壁の範囲 [a0, a1]
     const out = [];
     for (let i = 0; i < pk.length; i++) out.push([pk[i] + POCKET_W, (i + 1 < pk.length ? pk[i + 1] : pk[0] + Math.PI * 2) - POCKET_W]);
     return out;
   }
-  // ---- index.html 5064〜5068行目 ----
+  // ---- index.html 5125〜5129行目 ----
   const BITS = {
     attack:   { L: 18, r: 6.5, hex: true },
     defense:  { L: 14, r: 8.5 },
@@ -1488,7 +1504,7 @@ export function createCore(hooks) {
     balance:  { L: 20, r: 6.05 },
     ragnarok: { L: 20, r: 6.05, sleeve: true },
   };
-  // ---- index.html 6215〜6221行目 ----
+  // ---- index.html 6276〜6282行目 ----
   // その地点の床の高さ(スタジアムの中 / 壁の上 / 場外の床)
   function groundAt(x, z) {
     const r = Math.hypot(x, z);
@@ -1547,18 +1563,18 @@ export function createCore(hooks) {
     }
     if (r > R + 2500) t.fly = false; // 遠くへ行った
   }
-  // ---- index.html 6450〜6507行目 ----
+  // ---- index.html 6511〜6568行目 ----
   const INTRO_TIME = 2.5; // バトル開始の演出の長さ(秒)
-  // ---- index.html 9219〜9219行目 ----
+  // ---- index.html 9280〜9280行目 ----
   const RUB_CAP = 0.1;      // 0.1秒あたりに進められる上限(秒) → こすり続けても速さは最大2倍
   const RUB_MAX = AWAKE_CHARGE / 2; // 1回のチャージでこすって縮められるのは半分まで
-  // ---- index.html 9244〜9245行目 ----
+  // ---- index.html 9305〜9306行目 ----
   function rubCharge(t, sec) {
     if (!(t && t.alive && t.awake <= 0 && t.awakeCd > 0 && S.phase === 'battle')) return false;
     const ok = Math.max(0, Math.min(sec, RUB_MAX - (t.rubUsed || 0))); // 半分まで縮めたら、それ以上はこすっても進まない
     t.rubUsed = (t.rubUsed || 0) + ok; t.awakeCd = Math.max(0, t.awakeCd - ok);
     return ok > 0;
   }
-  // ---- index.html 9288〜9293行目 ----
+  // ---- index.html 9349〜9354行目 ----
   return { S, LOOP, DT, TIME_LIMIT, MAX_PLAYERS, TOUR_MIN, PART_MELT, TYPES, BLADES, STADIUMS, MODE_INFO, TEAM_NAMES, clamp, isImgData, makePlayer, addCpu, kick, reject, onHostData, onLeave, broadcast, broadcastLobby, hostStart, hostAgain, toLobby, tourPlayNext, tourSkipCpu, tourP, tourNext, skipToResult, cpuOnlyBattle, nextIsCpuMatch, hostTick, step, checkWin, initTops, launchMatch, makeSnap, sendPads, fastSimulate, skipReplay };
 }
